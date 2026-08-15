@@ -130,25 +130,49 @@ function safePage(project, rel) {
   }
 }
 
-function search(q) {
-  const needle = q.toLowerCase();
+// Multi-term AND search, ranked: title > heading > body. Optionally scoped
+// to one project (in-project search boxes pass their project name).
+function search(q, project) {
+  const terms = q.toLowerCase().split(/\s+/).filter(Boolean);
+  if (!terms.length) return [];
   const hits = [];
-  for (const proj of listProjects()) {
+  const projects = listProjects().filter(
+    (p) => !project || p.name === project,
+  );
+  for (const proj of projects) {
     const wiki = wikiDir(proj.name);
     for (const page of walk(wiki)) {
       const text = fs.readFileSync(path.join(wiki, page.rel), "utf8");
-      const idx = text.toLowerCase().indexOf(needle);
-      if (idx === -1) continue;
+      const lower = text.toLowerCase();
+      if (!terms.every((t) => lower.includes(t))) continue;
+      const title =
+        (text.match(/^---\n[\s\S]*?\btitle:\s*(.+)$/m) || [])[1]?.trim() ||
+        page.rel.split("/").pop().replace(/\.md$/, "");
+      let score = 1;
+      const titleLower = title.toLowerCase();
+      if (terms.some((t) => titleLower.includes(t))) score += 4;
+      if (terms.some((t) => page.rel.toLowerCase().includes(t))) score += 3;
+      for (const line of text.split("\n")) {
+        if (line.startsWith("#") && terms.some((t) => line.toLowerCase().includes(t))) {
+          score += 2;
+          break;
+        }
+      }
+      const idx = lower.indexOf(terms[0]);
       const start = Math.max(0, idx - 60);
       hits.push({
         project: proj.name,
         page: page.rel,
-        snippet: text.slice(start, idx + needle.length + 90).replace(/\s+/g, " "),
+        title,
+        score,
+        snippet: text
+          .slice(start, idx + terms[0].length + 110)
+          .replace(/\s+/g, " ")
+          .trim(),
       });
-      if (hits.length >= 60) return hits;
     }
   }
-  return hits;
+  return hits.sort((a, b) => b.score - a.score).slice(0, 50);
 }
 
 function json(res, data) {
@@ -186,7 +210,8 @@ const server = http.createServer((req, res) => {
   }
   if (url.pathname === "/api/search") {
     const q = (url.searchParams.get("q") || "").trim();
-    return json(res, q.length >= 2 ? search(q) : []);
+    const scope = url.searchParams.get("project") || "";
+    return json(res, q.length >= 2 ? search(q, scope) : []);
   }
   res.writeHead(404);
   res.end("not found");
@@ -266,8 +291,12 @@ const PAGE = /* html */ `<!doctype html>
   .hit { border: 1px solid var(--line); border-radius: 8px; background: var(--card);
     padding: 10px 14px; margin-bottom: 8px; cursor: pointer; }
   .hit:hover { border-color: var(--accent); }
-  .hit b { font-size: 13.5px; }
-  .hit div { color: var(--muted); font-size: 13px; }
+  .hit b { font-size: 14px; }
+  .hit .hloc { color: var(--muted); font-size: 12px; margin-left: 8px; }
+  .hit div { color: var(--muted); font-size: 13px; margin-top: 2px; }
+  .rhead { color: var(--muted); font-size: 13px; margin: 4px 2px 10px; }
+  mark { background: color-mix(in srgb, var(--accent) 25%, transparent);
+    color: inherit; border-radius: 3px; padding: 0 1px; }
   .crumb { color: var(--muted); font-size: 13px; margin-bottom: 4px; }
   @media (max-width: 700px) {
     #wrap { flex-direction: column; }
@@ -285,6 +314,14 @@ const PAGE = /* html */ `<!doctype html>
 <script>
 const view = document.getElementById("view");
 const q = document.getElementById("q");
+function currentProject() {
+  const p = location.hash.replace(/^#\\//, "").split("/")[0];
+  return p || null;
+}
+function syncSearchScope() {
+  const p = currentProject();
+  q.placeholder = p ? \`search \${p}…\` : "search all wikis…";
+}
 let trees = {}; // project -> [paths]
 mermaid.initialize({ startOnLoad: false, theme:
   matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "neutral" });
@@ -373,12 +410,31 @@ async function page(project, rel) {
   window.scrollTo(0, 0);
 }
 
+function esc(s) {
+  return s.replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+}
+function highlight(text, terms) {
+  let out = esc(text);
+  for (const t of terms) {
+    out = out.replace(new RegExp("(" + t.replace(/[.*+?^\${}()|\\[\\]\\\\]/g, "\\\\$&") + ")", "gi"), "<mark>$1</mark>");
+  }
+  return out;
+}
 async function results(term) {
-  const hits = await api("/api/search?q=" + encodeURIComponent(term));
-  view.innerHTML = '<div id="results">' + (hits.length ? hits.map(h =>
-    \`<div class="hit" onclick="location.hash='#/\${h.project}/\${h.page}'">
-       <b>\${h.project} / \${h.page}</b><div>…\${h.snippet}…</div></div>\`
-  ).join("") : "<p>no matches</p>") + "</div>";
+  const scope = currentProject();
+  const hits = await api(
+    "/api/search?q=" + encodeURIComponent(term) +
+    (scope ? "&project=" + encodeURIComponent(scope) : "")
+  );
+  const terms = term.toLowerCase().split(/\\s+/).filter(Boolean);
+  const where = scope ? "in " + scope : "across all wikis";
+  view.innerHTML = '<div id="results"><p class="rhead">' +
+    (hits.length ? hits.length + " results " + where : "no matches " + where) + "</p>" +
+    hits.map(h =>
+      \`<div class="hit" onclick="location.hash='#/\${h.project}/\${h.page}'">
+        <b>\${esc(h.title)}</b><span class="hloc">\${scope ? "" : h.project + " · "}\${h.page}</span>
+        <div>…\${highlight(h.snippet, terms)}…</div></div>\`
+    ).join("") + "</div>";
 }
 
 let searchTimer;
@@ -396,7 +452,8 @@ function route() {
   if (!project) return home();
   page(project, parts.slice(1).join("/") || null);
 }
-addEventListener("hashchange", () => { q.value = ""; route(); });
+addEventListener("hashchange", () => { q.value = ""; syncSearchScope(); route(); });
+syncSearchScope();
 route();
 </script>`;
 
