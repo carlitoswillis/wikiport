@@ -1,0 +1,12 @@
+{
+  "name": "wikiport",
+  "version": "0.1.0",
+  "description": "A clean local viewer for OpenWiki docs — one repo or a whole workspace of them. Zero dependencies, renders wikilinks and mermaid, full-text search, dark mode.",
+  "bin": { "wikiport": "./server.js" },
+  "scripts": { "start": "node server.js" },
+  "keywords": ["openwiki", "wiki", "docs", "markdown", "viewer", "local-first"],
+  "author": "Carlitos Willis",
+  "license": "MIT",
+  "repository": { "type": "git", "url": "https://github.com/carlitoswillis/wikiport.git" },
+  "engines": { "node": ">=18" }
+}
