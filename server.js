@@ -213,7 +213,11 @@ const server = http.createServer((req, res) => {
             rel: x.rel,
             title:
               fm(path.join(wiki, x.rel), "title") ||
-              x.rel.split("/").pop().replace(/\.md$/, ""),
+              (x.rel.endsWith("index.md")
+                ? (x.rel.includes("/")
+                    ? x.rel.split("/").slice(-2)[0] + " overview"
+                    : "Overview")
+                : x.rel.split("/").pop().replace(/\.md$/, "")),
           }))
           .sort((a, b) => a.rel.localeCompare(b.rel)),
       );
@@ -390,6 +394,35 @@ const PAGE = /* html */ `<!doctype html>
   }
   .hit div { color: var(--mutedfg); font-size: 13px; margin-top: 3px; }
   mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+  #toc {
+    width: 200px; flex-shrink: 0; position: sticky; top: 50px;
+    height: calc(100vh - 50px); overflow-y: auto; padding: 26px 18px 24px 0;
+  }
+  .toctitle {
+    color: var(--mutedfg); font: 10.5px/2 ui-monospace, Menlo, monospace;
+    text-transform: uppercase; letter-spacing: .09em; margin-bottom: 4px;
+  }
+  #toc a {
+    display: block; color: var(--mutedfg); text-decoration: none;
+    font-size: 12.5px; line-height: 1.5; padding: 2px 0;
+  }
+  #toc a:hover { color: var(--rubric); }
+  #pager {
+    display: flex; justify-content: space-between; gap: 12px;
+    margin-top: 48px; padding-top: 18px; border-top: 1px solid var(--line);
+  }
+  #pager a {
+    max-width: 46%; text-decoration: none; color: var(--fg);
+    font-family: ui-serif, Georgia, serif; font-size: 15px;
+  }
+  #pager a span {
+    display: block; color: var(--mutedfg);
+    font: 10.5px/2 ui-monospace, Menlo, monospace; text-transform: uppercase;
+    letter-spacing: .09em;
+  }
+  #pager a:hover { color: var(--rubric); }
+  #pager .next { margin-left: auto; text-align: right; }
+  @media (max-width: 1120px) { #toc { display: none; } }
   @media (max-width: 700px) {
     #wrap { flex-direction: column; }
     nav { width: 100%; height: auto; position: static; display: flex;
@@ -482,7 +515,18 @@ async function page(project, rel) {
     const dir = p.includes("/") ? p.slice(0, p.lastIndexOf("/")) : "";
     (groups[dir] = groups[dir] || []).push(p);
   }
-  const nav = Object.keys(groups).sort().map(dir => {
+  // Reading order: quickstart, then root pages, then each section with its
+  // index first. The same order drives the sidebar and prev/next pagination.
+  for (const dir of Object.keys(groups)) {
+    groups[dir].sort((a, b) => {
+      const rank = (p) => (p.endsWith("quickstart.md") ? 0 : p.endsWith("index.md") ? 1 : 2);
+      return rank(a) - rank(b) || a.localeCompare(b);
+    });
+  }
+  const orderedDirs = Object.keys(groups).sort((a, b) =>
+    (a === "" ? -1 : b === "" ? 1 : a.localeCompare(b)));
+  const reading = orderedDirs.flatMap(d => groups[d]);
+  const nav = orderedDirs.map(dir => {
     const dirIndex = dir ? dir + "/index.md" : null;
     const items = groups[dir].filter(p => p !== dirIndex);
     const header = dir
@@ -496,7 +540,8 @@ async function page(project, rel) {
   }).join("");
 
   view.innerHTML = \`<div id="wrap"><nav>\${nav}</nav>
-    <main><div class="crumb">\${project} / \${rel}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article></main></div>\`;
+    <main><div class="crumb">\${project} / \${rel}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article><footer id="pager"></footer></main>
+    <aside id="toc"></aside></div>\`;
   const article = view.querySelector("article");
   article.innerHTML = marked.parse(md);
 
@@ -522,6 +567,25 @@ async function page(project, rel) {
     pre.replaceWith(div);
   }
   if (i) mermaid.run({ querySelector: ".mermaid" }).catch(() => {});
+
+  // On this page: h2 outline in a right rail, so long pages have visible shape.
+  const heads = [...article.querySelectorAll("h2")];
+  const toc = view.querySelector("#toc");
+  if (heads.length >= 2) {
+    heads.forEach((h, n) => { h.id = "s" + n; });
+    toc.innerHTML = '<div class="toctitle">On this page</div>' + heads.map((h, n) =>
+      \`<a href="#\${""}" onclick="document.getElementById('s\${n}').scrollIntoView({behavior:'smooth'});return false">\${esc(h.textContent)}</a>\`
+    ).join("");
+  } else toc.innerHTML = "";
+
+  // Prev / next along the reading order — documentation with a spine.
+  const at = reading.indexOf(rel);
+  const pager = view.querySelector("#pager");
+  const link = (p, cls, label) =>
+    \`<a class="\${cls}" href="#/\${project}/\${p}"><span>\${label}</span>\${esc(titleOf[p] || p)}</a>\`;
+  pager.innerHTML =
+    (at > 0 ? link(reading[at - 1], "prev", "previous") : "<span></span>") +
+    (at < reading.length - 1 ? link(reading[at + 1], "next", "next") : "<span></span>");
   window.scrollTo(0, 0);
 }
 
