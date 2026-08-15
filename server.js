@@ -6,6 +6,7 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const { execFileSync } = require("child_process");
 
 // CLI: wikiport [root] [--port N] [--host H]
 //   root: a directory of repos (each with an openwiki/ folder), or a single
@@ -71,6 +72,41 @@ function wikiDir(project) {
   return path.join(ROOT, project, "openwiki");
 }
 
+// Docs-vs-code freshness: OpenWiki records the git HEAD it documented;
+// compare against the repo's current HEAD. Cached briefly — git spawns per
+// request would drag down search.
+const freshCache = new Map();
+function freshness(repoDir, wiki) {
+  const hit = freshCache.get(repoDir);
+  if (hit && Date.now() - hit.t < 30_000) return hit.v;
+  let v = { state: "unknown", behind: 0 };
+  try {
+    const meta = JSON.parse(
+      fs.readFileSync(path.join(wiki, ".last-update.json"), "utf8"),
+    );
+    if (meta.gitHead) {
+      const head = execFileSync("git", ["-C", repoDir, "rev-parse", "HEAD"], {
+        timeout: 3000, stdio: ["ignore", "pipe", "ignore"],
+      }).toString().trim();
+      if (head === meta.gitHead) v = { state: "current", behind: 0 };
+      else {
+        const n = Number(
+          execFileSync(
+            "git",
+            ["-C", repoDir, "rev-list", "--count", meta.gitHead + "..HEAD"],
+            { timeout: 3000, stdio: ["ignore", "pipe", "ignore"] },
+          ).toString().trim(),
+        );
+        v = { state: "behind", behind: Number.isFinite(n) && n > 0 ? n : 1 };
+      }
+    }
+  } catch {
+    // no git, no metadata, or unknown commit - stay "unknown"
+  }
+  freshCache.set(repoDir, { t: Date.now(), v });
+  return v;
+}
+
 function listProjects() {
   if (SINGLE) {
     const pages = walk(SINGLE);
@@ -98,7 +134,10 @@ function listProjects() {
     const desc =
       fm(path.join(wiki, "quickstart.md"), "description") ||
       fm(path.join(wiki, "index.md"), "description");
-    out.push({ name, pages: pages.length, updated, desc });
+    out.push({
+      name, pages: pages.length, updated, desc,
+      fresh: freshness(path.join(ROOT, name), wiki),
+    });
   }
   return out.sort((a, b) => a.name.localeCompare(b.name));
 }
@@ -394,6 +433,9 @@ const PAGE = /* html */ `<!doctype html>
   }
   .hit div { color: var(--mutedfg); font-size: 13px; margin-top: 3px; }
   mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
+  .fresh { font-style: normal; }
+  .fresh.ok { color: var(--mutedfg); }
+  .fresh.stale { color: var(--rubric); }
   #toc {
     width: 200px; flex-shrink: 0; position: sticky; top: 50px;
     height: calc(100vh - 50px); overflow-y: auto; padding: 26px 18px 24px 0;
@@ -466,6 +508,12 @@ mermaid.initialize({ startOnLoad: false, theme:
 
 async function api(p) { return (await fetch(p)).json(); }
 
+function badge(f) {
+  if (!f || f.state === "unknown") return "";
+  if (f.state === "current") return ' · <i class="fresh ok">current</i>';
+  return ' · <i class="fresh stale">behind ' + f.behind + ' commit' + (f.behind === 1 ? "" : "s") + '</i>';
+}
+let projMeta = {};
 function ago(t) {
   const s = (Date.now() - t) / 1000;
   if (s < 3600) return Math.max(1, Math.round(s / 60)) + "m ago";
@@ -474,10 +522,11 @@ function ago(t) {
 }
 async function home() {
   const projects = await api("/api/projects");
+  for (const p of projects) projMeta[p.name] = p;
   view.innerHTML = '<div id="home">' + projects.map(p =>
     \`<div class="card" tabindex="0" onclick="location.hash='#/\${p.name}'"><b>\${p.name}</b>
      \${p.desc ? '<em>' + esc(p.desc) + '</em>' : ''}
-     <span>\${p.pages} pages · \${ago(p.updated)}</span></div>\`
+     <span>\${p.pages} pages · \${ago(p.updated)}\${badge(p.fresh)}</span></div>\`
   ).join("") + "</div>";
 }
 
@@ -548,8 +597,9 @@ async function page(project, rel) {
     ).join("");
   }).join("");
 
+  if (!projMeta[project]) for (const p of await api("/api/projects")) projMeta[p.name] = p;
   view.innerHTML = \`<div id="wrap"><nav>\${nav}</nav>
-    <main><div class="crumb"><button id="navtoggle" onclick="document.getElementById('wrap').classList.toggle('shownav')">☰ contents</button>\${project} / \${rel}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article><footer id="pager"></footer></main>
+    <main><div class="crumb"><button id="navtoggle" onclick="document.getElementById('wrap').classList.toggle('shownav')">☰ contents</button>\${project} / \${rel}\${badge(projMeta[project] && projMeta[project].fresh)}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article><footer id="pager"></footer></main>
     <aside id="toc"></aside></div>\`;
   const article = view.querySelector("article");
   article.innerHTML = marked.parse(md);
