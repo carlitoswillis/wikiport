@@ -423,16 +423,25 @@ const PAGE = /* html */ `<!doctype html>
   #pager a:hover { color: var(--rubric); }
   #pager .next { margin-left: auto; text-align: right; }
   @media (max-width: 1120px) { #toc { display: none; } }
+  #navtoggle { display: none; }
   @media (max-width: 700px) {
     #wrap { flex-direction: column; }
-    nav { width: 100%; height: auto; position: static; display: flex;
-      flex-wrap: wrap; gap: 0 4px; border-right: none;
-      border-bottom: 1px solid var(--line); padding: 8px 0 12px; }
-    nav a { border-left: none; }
+    /* On a phone the full page list would push content a screen below the
+       fold — collapse it behind a contents toggle instead. */
+    nav { display: none; }
+    #wrap.shownav nav { display: block; width: 100%; height: auto;
+      position: static; border-right: none;
+      border-bottom: 1px solid var(--line); padding: 6px 0 12px; }
+    nav a { border-left: none; padding: 5px 16px; }
     nav a.active { border-left: none; text-decoration: underline;
       text-decoration-color: var(--rubric); }
-    nav a.dir { margin-top: 6px; width: 100%; }
-    main { padding: 18px 16px 60px; }
+    #navtoggle {
+      display: inline-block; border: 1px solid var(--line); background: var(--card);
+      color: var(--mutedfg); font: 11px/1.6 ui-monospace, Menlo, monospace;
+      border-radius: 5px; padding: 2px 8px; margin-right: 8px; cursor: pointer;
+    }
+    #navtoggle:active { color: var(--rubric); border-color: var(--rubric); }
+    main { padding: 16px 16px 60px; }
   }
 </style>
 <header>
@@ -540,7 +549,7 @@ async function page(project, rel) {
   }).join("");
 
   view.innerHTML = \`<div id="wrap"><nav>\${nav}</nav>
-    <main><div class="crumb">\${project} / \${rel}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article><footer id="pager"></footer></main>
+    <main><div class="crumb"><button id="navtoggle" onclick="document.getElementById('wrap').classList.toggle('shownav')">☰ contents</button>\${project} / \${rel}</div>\${fmDesc ? '<p class="lede">' + esc(fmDesc.trim()) + '</p>' : ''}<article></article><footer id="pager"></footer></main>
     <aside id="toc"></aside></div>\`;
   const article = view.querySelector("article");
   article.innerHTML = marked.parse(md);
